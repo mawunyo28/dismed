@@ -29,7 +29,7 @@ export default function LoginPage() {
         setPassword(event.target.value);
   }
 
-  function emailEntry(event) {
+  function emailEntry(event: { target: { value: SetStateAction<string>; }; }) {
     setEmail(event.target.value);
   }
 

@@ -1,3 +1,4 @@
+'use client';
 import Link from "next/link"
 import { Activity, Mail, Lock, User } from "lucide-react"
 
@@ -7,10 +8,27 @@ import { Field, FieldLabel } from "@/components/ui/field"
 import { InputGroup, InputGroupInput, InputGroupAddon } from "@/components/ui/input-group"
 import { Checkbox } from "@/components/ui/checkbox"
 import { useState } from "react"
+import {createClient} from "@/lib/supabase/client";
+import {toast} from "sonner";
 
 export default function SignupPage() {
 
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+
+  const supabase  = createClient();
+
+  const signUp = async () => {
+    supabase.auth.signUp({
+      email: email,
+      password: password,
+    })
+  }
+
+  const [comparison, setComparison]  = useState(false);
+
+
   return (
     <div className="flex min-h-screen flex-col bg-muted/30">
       <main className="flex flex-1 items-center justify-center p-6">
@@ -33,6 +51,8 @@ export default function SignupPage() {
                   id="name"
                   type="text"
                   placeholder="John Doe"
+
+                  onChange={(e) => setName(e.target.value)}
                 />
               </InputGroup>
             </Field>
@@ -46,7 +66,10 @@ export default function SignupPage() {
                   id="email"
                   type="email"
                   placeholder="name@example.com"
+
+                  onChange={(e) => setEmail(e.target.value)}
                 />
+                <p></p>
               </InputGroup>
             </Field>
             <Field>
@@ -59,7 +82,10 @@ export default function SignupPage() {
                   id="password"
                   type="password"
                   placeholder="Create a strong password"
+
+                  onChange={(e) => setPassword(e.target.value)}
                 />
+
               </InputGroup>
             </Field>
             <Field>
@@ -72,8 +98,23 @@ export default function SignupPage() {
                   id="confirm-password"
                   type="password"
                   placeholder="Confirm your password"
+
+                  onChange={(e) => {
+
+                      let comfirm_password = e.target.value;
+                      if (password !== comfirm_password) {
+                        setComparison(true);
+                      }
+                      else {
+                        setComparison(false);
+                      }
+
+                    }
+                  }
                 />
+
               </InputGroup>
+              {comparison ? <p className="text-sm text-red"> Passwords don't match </p> : <p></p>}
             </Field>
             <div className="flex items-center gap-2">
               <Checkbox id="terms" />
@@ -84,8 +125,11 @@ export default function SignupPage() {
                 <Link href="#" className="text-foreground hover:underline">Privacy Policy</Link>
               </label>
             </div>
-            <Button className="w-full" size="lg" asChild>
-              <Link href="/dashboard">Create Account</Link>
+            <Button className="w-full" size="lg" asChild onClick={() => { toast.promise(signUp(), {
+              loading: "",
+              success: "Check Your Email to verify signup"
+            }) }}>
+              {/*<Link href="/dashboard">Create Account</Link>*/}
             </Button>
           </CardContent>
           <CardFooter className="justify-center border-t pt-6">
