@@ -1,29 +1,30 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
-import { Pill, AlertTriangle, Clock, Grid3X3, Plus, Pencil, Trash2, Save, X } from "lucide-react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  Pill, AlertTriangle, Grid3X3, Pencil, Save, X,
+  RefreshCw, Loader2, CheckCircle, Plus, Trash2,
+} from "lucide-react"
+import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog"
-import { Label } from "@/components/ui/label"
 import { createClient } from "@/lib/supabase/client"
-import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Compartment {
   id: string
-  slot: number                // 1 | 2 | 3
+  device_id: string
+  slot: number
   medication_name: string | null
   dosage_mg: number | null
   pill_count: number
@@ -31,110 +32,148 @@ interface Compartment {
   updated_at: string
 }
 
-interface Device {
-  id: string
-  label: string | null
+interface FormState {
+  medication_name: string
+  dosage_mg: string
+  pill_count: string
+  capacity: string
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function stockStatus(c: Compartment): "active" | "low" | "empty" {
+type StockLevel = "ok" | "low" | "empty"
+
+function stockLevel(c: Compartment): StockLevel {
+  if (!c.medication_name) return "empty"
   if (c.pill_count === 0) return "empty"
   if (c.pill_count / c.capacity < 0.2) return "low"
-  return "active"
+  return "ok"
 }
 
-const SLOT_COLORS: Record<number, string> = {
-  1: "bg-blue-100 border-blue-300 text-blue-800",
-  2: "bg-violet-100 border-violet-300 text-violet-800",
-  3: "bg-emerald-100 border-emerald-300 text-emerald-800",
+const SLOT_ACCENT: Record<number, { bg: string; border: string; dot: string }> = {
+  1: { bg: "bg-blue-50",   border: "border-blue-200",   dot: "bg-blue-500"   },
+  2: { bg: "bg-violet-50", border: "border-violet-200", dot: "bg-violet-500" },
+  3: { bg: "bg-emerald-50",border: "border-emerald-200",dot: "bg-emerald-500"},
+}
+
+function relativeTime(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return "Just now"
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  return new Date(iso).toLocaleDateString()
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function MedicationsPage() {
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
 
-  const [device, setDevice] = useState<Device | null>(null)
   const [compartments, setCompartments] = useState<Compartment[]>([])
+  const [deviceId, setDeviceId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
-  // Edit dialog state
+  // Edit dialog
   const [editing, setEditing] = useState<Compartment | null>(null)
-  const [form, setForm] = useState({
-    medication_name: "",
-    dosage_mg: "",
-    pill_count: "",
-    capacity: "",
-  })
+  const [form, setForm] = useState<FormState>({ medication_name: "", dosage_mg: "", pill_count: "", capacity: "" })
+  const [saving, setSaving] = useState(false)
 
-  // ── Fetch ──────────────────────────────────────────────────────────────────
+  // ── Load ────────────────────────────────────────────────────────────────────
 
   const load = useCallback(async () => {
     setLoading(true)
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { setLoading(false); return }
 
-    // Get user's device
-    const { data: deviceData } = await supabase
+    const { data: device } = await supabase
         .from("devices")
-        .select("id, label")
+        .select("id")
         .eq("owner_id", user.id)
         .limit(1)
-        .single()
+        .maybeSingle()
 
-    if (!deviceData) { setLoading(false); return }
-    setDevice(deviceData)
+    if (!device) { setLoading(false); return }
+    setDeviceId(device.id)
 
-    // Get its 3 compartments
-    const { data: comps } = await supabase
+    const { data, error } = await supabase
         .from("compartments")
         .select("*")
-        .eq("device_id", deviceData.id)
+        .eq("device_id", device.id)
         .order("slot")
 
-    setCompartments(comps ?? [])
+    if (error) toast.error(error.message)
+    else setCompartments((data ?? []) as Compartment[])
+
     setLoading(false)
   }, [supabase])
 
   useEffect(() => { load() }, [load])
 
-  // ── Save compartment ───────────────────────────────────────────────────────
+  // ── Real-time: pill count changes from dispense events ────────────────────
+
+  useEffect(() => {
+    if (!deviceId) return
+    const channel = supabase
+        .channel("compartments-live")
+        .on("postgres_changes", {
+          event: "UPDATE", schema: "public", table: "compartments",
+          filter: `device_id=eq.${deviceId}`,
+        }, (payload) => {
+          const updated = payload.new as Compartment
+          setCompartments(prev =>
+              prev.map(c => c.id === updated.id ? updated : c)
+          )
+        })
+        .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [deviceId, supabase])
+
+  // ── Edit dialog ─────────────────────────────────────────────────────────────
 
   const openEdit = (c: Compartment) => {
     setEditing(c)
     setForm({
       medication_name: c.medication_name ?? "",
-      dosage_mg: c.dosage_mg?.toString() ?? "",
-      pill_count: c.pill_count.toString(),
-      capacity: c.capacity.toString(),
+      dosage_mg:       c.dosage_mg?.toString() ?? "",
+      pill_count:      c.pill_count.toString(),
+      capacity:        c.capacity.toString(),
     })
   }
 
   const saveEdit = async () => {
     if (!editing) return
+    setSaving(true)
+
     const patch = {
-      medication_name: form.medication_name || null,
-      dosage_mg: form.dosage_mg ? parseFloat(form.dosage_mg) : null,
-      pill_count: parseInt(form.pill_count) || 0,
-      capacity: parseInt(form.capacity) || 30,
-      updated_at: new Date().toISOString(),
+      medication_name: form.medication_name.trim() || null,
+      dosage_mg:       form.dosage_mg ? parseFloat(form.dosage_mg) : null,
+      pill_count:      Math.max(0, parseInt(form.pill_count) || 0),
+      capacity:        Math.max(1, parseInt(form.capacity)   || 30),
+      updated_at:      new Date().toISOString(),
     }
+
+    // Clamp pill_count to capacity
+    if (patch.pill_count > patch.capacity) patch.pill_count = patch.capacity
+
     const { error } = await supabase
         .from("compartments")
         .update(patch)
         .eq("id", editing.id)
 
     if (error) {
-      toast.error("Failed to save: " + error.message)
+      toast.error(error.message)
     } else {
-      toast.success(`Compartment ${editing.slot} updated`)
+      toast.success(`Compartment ${editing.slot} saved`)
       setEditing(null)
       load()
     }
+    setSaving(false)
   }
 
   const clearCompartment = async (c: Compartment) => {
+    if (!confirm(`Clear compartment ${c.slot}? This removes the medication and resets the pill count.`)) return
     const { error } = await supabase
         .from("compartments")
         .update({ medication_name: null, dosage_mg: null, pill_count: 0, updated_at: new Date().toISOString() })
@@ -143,74 +182,31 @@ export default function MedicationsPage() {
     else { toast.success(`Compartment ${c.slot} cleared`); load() }
   }
 
-  // ── Derived stats ──────────────────────────────────────────────────────────
+  // ── Stats ───────────────────────────────────────────────────────────────────
 
-  const active = compartments.filter(c => c.medication_name && stockStatus(c) === "active").length
-  const low    = compartments.filter(c => stockStatus(c) === "low").length
-  const empty  = compartments.filter(c => !c.medication_name).length
+  const filled     = compartments.filter(c => c.medication_name)
+  const lowStock   = compartments.filter(c => stockLevel(c) === "low")
+  const emptySlots = compartments.filter(c => !c.medication_name)
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
       <div className="flex flex-col gap-6 p-6">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Medications & Compartments</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Medications</h1>
             <p className="text-muted-foreground">
-              {device ? `Device: ${device.label ?? device.id}` : "No device linked yet"} · 3 compartments
+              Assign medications to the 3 compartments and track pill counts.
             </p>
           </div>
+          <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+            <RefreshCw className={cn("mr-2 size-4", loading && "animate-spin")} />
+            Refresh
+          </Button>
         </div>
 
-        {/* Visual compartment map */}
-        <div className="grid grid-cols-3 gap-4">
-          {[1, 2, 3].map(slot => {
-            const c = compartments.find(x => x.slot === slot)
-            const filled = !!c?.medication_name
-            const pct = c ? (c.pill_count / c.capacity) * 100 : 0
-            return (
-                <Card
-                    key={slot}
-                    className={cn(
-                        "border-2 transition-colors cursor-pointer hover:shadow-md",
-                        filled ? SLOT_COLORS[slot] : "border-dashed border-muted-foreground/30 bg-muted/30"
-                    )}
-                    onClick={() => c && openEdit(c)}
-                >
-                  <CardContent className="flex flex-col items-center gap-3 py-6 text-center">
-                    <div className="flex size-12 items-center justify-center rounded-full bg-white/70 shadow-sm">
-                      <Pill className="size-6 text-gray-600" />
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                        Compartment {slot}
-                      </p>
-                      <p className="mt-0.5 font-semibold">
-                        {c?.medication_name ?? <span className="text-muted-foreground italic">Empty — click to set up</span>}
-                      </p>
-                      {c?.dosage_mg && (
-                          <p className="text-xs text-muted-foreground">{c.dosage_mg} mg</p>
-                      )}
-                    </div>
-                    {filled && c && (
-                        <div className="w-full">
-                          <Progress value={pct} className="h-2" />
-                          <p className="mt-1 text-xs text-muted-foreground">{c.pill_count} / {c.capacity} pills</p>
-                        </div>
-                    )}
-                    {!filled && (
-                        <div className="flex size-8 items-center justify-center rounded-full border-2 border-dashed border-muted-foreground/40">
-                          <Plus className="size-4 text-muted-foreground/40" />
-                        </div>
-                    )}
-                  </CardContent>
-                </Card>
-            )
-          })}
-        </div>
-
-        {/* Stats row */}
+        {/* Stats */}
         <div className="grid gap-4 sm:grid-cols-3">
           <Card>
             <CardContent className="flex items-center gap-4 py-4">
@@ -218,8 +214,8 @@ export default function MedicationsPage() {
                 <Pill className="size-5" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Active</p>
-                <p className="text-2xl font-bold">{active}</p>
+                <p className="text-sm text-muted-foreground">Filled Slots</p>
+                <p className="text-2xl font-bold">{filled.length} / 3</p>
               </div>
             </CardContent>
           </Card>
@@ -230,7 +226,7 @@ export default function MedicationsPage() {
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Low Stock</p>
-                <p className="text-2xl font-bold">{low}</p>
+                <p className="text-2xl font-bold">{lowStock.length}</p>
               </div>
             </CardContent>
           </Card>
@@ -241,100 +237,155 @@ export default function MedicationsPage() {
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Empty Slots</p>
-                <p className="text-2xl font-bold">{empty}</p>
+                <p className="text-2xl font-bold">{emptySlots.length}</p>
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* Detail table */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Compartment Details</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-                <p className="py-8 text-center text-muted-foreground">Loading…</p>
-            ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Slot</TableHead>
-                      <TableHead>Medication</TableHead>
-                      <TableHead>Dosage</TableHead>
-                      <TableHead>Pill Count / Capacity</TableHead>
-                      <TableHead>Stock</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {compartments.map(c => {
-                      const pct = (c.pill_count / c.capacity) * 100
-                      const status = stockStatus(c)
-                      return (
-                          <TableRow key={c.id}>
-                            <TableCell>
-                              <Badge className={cn("border", SLOT_COLORS[c.slot])}>
-                                Slot {c.slot}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="font-medium">
-                              {c.medication_name ?? <span className="italic text-muted-foreground">Not set</span>}
-                            </TableCell>
-                            <TableCell>{c.dosage_mg ? `${c.dosage_mg} mg` : "—"}</TableCell>
-                            <TableCell>
-                              <div className="flex flex-col gap-1">
-                          <span className="text-sm">
-                            <strong>{c.pill_count}</strong> / {c.capacity}
-                          </span>
-                                <Progress
-                                    value={pct}
-                                    className={cn(
-                                        "h-2 w-28",
-                                        status === "low" && "[&>div]:bg-amber-500",
-                                        status === "empty" && "[&>div]:bg-red-500"
+        {loading ? (
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="size-6 animate-spin text-muted-foreground" />
+            </div>
+        ) : compartments.length === 0 ? (
+            <Card className="border-dashed">
+              <CardContent className="py-14 text-center text-muted-foreground">
+                No device linked. <a href="/devices" className="underline">Register your dispenser first →</a>
+              </CardContent>
+            </Card>
+        ) : (
+            <>
+              {/* Visual compartment cards */}
+              <div className="grid gap-4 sm:grid-cols-3">
+                {[1, 2, 3].map(slot => {
+                  const c = compartments.find(x => x.slot === slot)
+                  if (!c) return null
+                  const level = stockLevel(c)
+                  const pct = c.capacity > 0 ? (c.pill_count / c.capacity) * 100 : 0
+                  const accent = SLOT_ACCENT[slot]
+
+                  return (
+                      <Card
+                          key={slot}
+                          className={cn(
+                              "border-2 cursor-pointer hover:shadow-md transition-all group",
+                              c.medication_name
+                                  ? `${accent.bg} ${accent.border}`
+                                  : "border-dashed bg-muted/20 hover:bg-muted/30"
+                          )}
+                          onClick={() => openEdit(c)}
+                      >
+                        <CardContent className="flex flex-col gap-3 p-5">
+                          {/* Slot number */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <div className={cn("size-2.5 rounded-full", c.medication_name ? accent.dot : "bg-muted-foreground/30")} />
+                              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                          Compartment {slot}
+                        </span>
+                            </div>
+                            <Pencil className="size-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                          </div>
+
+                          {/* Medication info */}
+                          {c.medication_name ? (
+                              <>
+                                <div>
+                                  <p className="font-semibold text-lg leading-tight">{c.medication_name}</p>
+                                  {c.dosage_mg && (
+                                      <p className="text-sm text-muted-foreground">{c.dosage_mg} mg per dose</p>
+                                  )}
+                                </div>
+
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between text-sm">
+                            <span className="text-muted-foreground">
+                              {c.pill_count} / {c.capacity} pills
+                            </span>
+                                    {level === "low" && (
+                                        <Badge className="bg-amber-100 text-amber-700 text-xs">Low</Badge>
                                     )}
-                                />
+                                    {level === "empty" && (
+                                        <Badge variant="destructive" className="text-xs">Empty</Badge>
+                                    )}
+                                    {level === "ok" && (
+                                        <Badge className="bg-green-100 text-green-700 text-xs">OK</Badge>
+                                    )}
+                                  </div>
+                                  <Progress
+                                      value={pct}
+                                      className={cn(
+                                          "h-2",
+                                          level === "low"   && "[&>div]:bg-amber-500",
+                                          level === "empty" && "[&>div]:bg-red-500",
+                                          level === "ok"    && "[&>div]:bg-green-500",
+                                      )}
+                                  />
+                                </div>
+
+                                <p className="text-xs text-muted-foreground">
+                                  Updated {relativeTime(c.updated_at)}
+                                </p>
+                              </>
+                          ) : (
+                              <div className="flex flex-col items-center gap-2 py-4 text-center">
+                                <div className="flex size-10 items-center justify-center rounded-full border-2 border-dashed border-muted-foreground/30">
+                                  <Plus className="size-4 text-muted-foreground/40" />
+                                </div>
+                                <p className="text-sm text-muted-foreground">Click to set up medication</p>
                               </div>
-                            </TableCell>
-                            <TableCell>
-                              {status === "active" && <Badge className="bg-green-100 text-green-700">Active</Badge>}
-                              {status === "low"    && <Badge className="bg-amber-100 text-amber-700">Low Stock</Badge>}
-                              {status === "empty"  && <Badge variant="secondary">Empty</Badge>}
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex gap-1">
-                                <Button variant="ghost" size="icon" onClick={() => openEdit(c)}>
-                                  <Pencil className="size-4" />
-                                </Button>
-                                {c.medication_name && (
-                                    <Button variant="ghost" size="icon" onClick={() => clearCompartment(c)}>
-                                      <Trash2 className="size-4 text-red-500" />
-                                    </Button>
-                                )}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                      )
-                    })}
-                  </TableBody>
-                </Table>
-            )}
-          </CardContent>
-        </Card>
+                          )}
+                        </CardContent>
+                      </Card>
+                  )
+                })}
+              </div>
+
+              {/* Low stock alerts */}
+              {lowStock.length > 0 && (
+                  <Card className="border-amber-200 bg-amber-50">
+                    <CardContent className="flex items-start gap-3 py-4">
+                      <AlertTriangle className="mt-0.5 size-4 text-amber-600 shrink-0" />
+                      <div className="space-y-1">
+                        <p className="font-medium text-amber-900">Low stock alert</p>
+                        {lowStock.map(c => (
+                            <p key={c.id} className="text-sm text-amber-800">
+                              Slot {c.slot} · {c.medication_name}: {c.pill_count} pills remaining
+                              ({Math.round((c.pill_count / c.capacity) * 100)}% full)
+                            </p>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+              )}
+
+              {/* Info: automatic decrement */}
+              <Card className="bg-muted/40 border-dashed">
+                <CardContent className="py-3">
+                  <p className="text-xs text-muted-foreground flex items-start gap-2">
+                    <CheckCircle className="size-3.5 mt-0.5 text-green-600 shrink-0" />
+                    Pill counts are automatically decremented by the ESP32 each time a dose is dispensed.
+                    Edit counts manually here only when physically refilling a compartment.
+                  </p>
+                </CardContent>
+              </Card>
+            </>
+        )}
 
         {/* Edit dialog */}
         <Dialog open={!!editing} onOpenChange={open => !open && setEditing(null)}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>
-                {editing?.medication_name ? "Edit" : "Set up"} Compartment {editing?.slot}
+                {editing?.medication_name
+                    ? `Edit Compartment ${editing?.slot}`
+                    : `Set Up Compartment ${editing?.slot}`}
               </DialogTitle>
             </DialogHeader>
 
-            <div className="flex flex-col gap-4 py-2">
-              <div className="grid gap-1.5">
-                <Label htmlFor="med-name">Medication Name</Label>
+            <div className="space-y-4 py-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="med-name">Medication name</Label>
                 <Input
                     id="med-name"
                     placeholder="e.g. Metformin"
@@ -342,7 +393,7 @@ export default function MedicationsPage() {
                     onChange={e => setForm(f => ({ ...f, medication_name: e.target.value }))}
                 />
               </div>
-              <div className="grid gap-1.5">
+              <div className="space-y-1.5">
                 <Label htmlFor="dosage">Dosage (mg)</Label>
                 <Input
                     id="dosage"
@@ -353,8 +404,8 @@ export default function MedicationsPage() {
                 />
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="pill-count">Current Pill Count</Label>
+                <div className="space-y-1.5">
+                  <Label htmlFor="pill-count">Current pill count</Label>
                   <Input
                       id="pill-count"
                       type="number"
@@ -363,8 +414,8 @@ export default function MedicationsPage() {
                       onChange={e => setForm(f => ({ ...f, pill_count: e.target.value }))}
                   />
                 </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="capacity">Compartment Capacity</Label>
+                <div className="space-y-1.5">
+                  <Label htmlFor="capacity">Capacity</Label>
                   <Input
                       id="capacity"
                       type="number"
@@ -374,21 +425,28 @@ export default function MedicationsPage() {
                   />
                 </div>
               </div>
-
-              {editing && (
-                  <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
-                    This updates the portal. When the ESP32 successfully dispenses, it will automatically
-                    decrement the pill count via <code>/api/device/dispense</code>.
-                  </p>
-              )}
+              <p className="text-xs text-muted-foreground rounded-lg bg-muted px-3 py-2">
+                Set pill count to the number currently loaded. The ESP32 decrements this
+                automatically after each dispense.
+              </p>
             </div>
 
-            <DialogFooter className="gap-2">
+            <DialogFooter className="flex flex-wrap gap-2">
+              {editing?.medication_name && (
+                  <Button
+                      variant="ghost"
+                      className="text-red-600 hover:text-red-700 hover:bg-red-50 mr-auto"
+                      onClick={() => { setEditing(null); clearCompartment(editing!) }}
+                  >
+                    <Trash2 className="mr-2 size-4" /> Clear slot
+                  </Button>
+              )}
               <Button variant="outline" onClick={() => setEditing(null)}>
                 <X className="mr-2 size-4" /> Cancel
               </Button>
-              <Button onClick={saveEdit}>
-                <Save className="mr-2 size-4" /> Save
+              <Button onClick={saveEdit} disabled={saving}>
+                {saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
+                Save
               </Button>
             </DialogFooter>
           </DialogContent>
