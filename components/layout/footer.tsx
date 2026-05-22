@@ -10,8 +10,8 @@ const footerLinks = {
   ],
   healthServices: [
     { label: "Symptom Checker", href: "/symptom-checker" },
-    { label: "Voice Analysis", href: "/voice-health" },
-    { label: "Painkiller Flow", href: "/painkiller" },
+    { label: "Schedules", href: "/schedules" },
+    { label: "Notifications", href: "/notifications" },
     { label: "Caregiver Support", href: "/caregivers" },
   ],
   support: [

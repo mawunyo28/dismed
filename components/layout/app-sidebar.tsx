@@ -8,14 +8,12 @@ import {
   Calendar,
   HardDrive,
   Activity,
-  Mic,
   Users,
   Shield,
   HelpCircle,
   Settings,
   LogOut,
   Bell,
-  Syringe,
 } from "lucide-react"
 
 import {
@@ -41,8 +39,6 @@ const mainNavItems = [
 
 const healthNavItems = [
   { title: "Symptom Checker", href: "/symptom-checker", icon: Activity },
-  { title: "Voice Health", href: "/voice-health", icon: Mic },
-  { title: "Pain Relief", href: "/painkiller", icon: Syringe },
 ]
 
 const socialNavItems = [

@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Activity, ArrowRight, Check, Shield, Mic, Smartphone, Users, Zap, Clock } from "lucide-react"
+import { Activity, ArrowRight, Calendar, Check, HardDrive, Shield, Smartphone, Users, Zap, Clock } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -12,9 +12,9 @@ const features = [
     description: "Monitor and manage pill compartments, adjust schedules, and manually override settings from anywhere in the world via our secure app.",
   },
   {
-    icon: Mic,
-    title: "Voice Health Analysis",
-    description: "Our built-in AI analyzes vocal patterns to detect early signs of respiratory issues, fatigue, or dehydration before they become critical.",
+    icon: HardDrive,
+    title: "ESP32 Device Sync",
+    description: "The dispenser reports heartbeat, dispense events, and device status to Supabase so the dashboard can show live hardware state.",
   },
   {
     icon: Users,
@@ -22,9 +22,9 @@ const features = [
     description: "Instantly notify family members or clinicians of missed doses or abnormal health readings, ensuring a rapid safety net.",
   },
   {
-    icon: Activity,
-    title: "Symptom & Pain Management",
-    description: "Track daily symptoms and utilize our intelligent protocol for safe, automated painkiller dispensing within strict safety limits.",
+    icon: Calendar,
+    title: "Schedule Polling",
+    description: "Set medication schedules in the dashboard and let the ESP32 poll Supabase-backed API routes for the next dispensing action.",
   },
   {
     icon: Zap,
@@ -291,8 +291,8 @@ export default function LandingPage() {
               <h3 className="mb-4 text-sm font-semibold">Health Services</h3>
               <ul className="flex flex-col gap-2 text-sm text-muted-foreground">
                 <li><Link href="/symptom-checker" className="hover:text-foreground">Symptom Checker</Link></li>
-                <li><Link href="/voice-health" className="hover:text-foreground">Voice Analysis</Link></li>
-                <li><Link href="/painkiller" className="hover:text-foreground">Painkiller Flow</Link></li>
+                <li><Link href="/schedules" className="hover:text-foreground">Schedules</Link></li>
+                <li><Link href="/notifications" className="hover:text-foreground">Notifications</Link></li>
                 <li><Link href="/caregivers" className="hover:text-foreground">Caregiver Support</Link></li>
               </ul>
             </div>

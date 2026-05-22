@@ -352,7 +352,7 @@ export default function CaregiversPage() {
                 <div>
                   <div className="font-medium">Approval Authority</div>
                   <p className="text-sm text-muted-foreground">
-                    Allows approving &quot;As-Needed&quot; painkiller requests and overriding safety lockouts. Recommended for doctors only.
+                    Allows approving schedule changes and overriding locked dispenser actions. Recommended for clinicians only.
                   </p>
                 </div>
               </div>

@@ -60,8 +60,8 @@ export default function SignupPage() {
         password,
         options: {
           data: { full_name: name.trim() },
-          // After email verification the user lands on /setup
-          emailRedirectTo: `${location.origin}/setup`,
+          // After email verification the user lands on device linking.
+          emailRedirectTo: `${location.origin}/devices`,
         },
       })
 
@@ -88,7 +88,7 @@ export default function SignupPage() {
               <h2 className="text-2xl font-bold">Check your inbox</h2>
               <p className="mt-2 text-sm text-muted-foreground">
                 We sent a confirmation link to <strong>{email}</strong>. Click it to verify your
-                account — you'll be taken straight to device setup.
+                account — you'll be taken straight to device linking.
               </p>
             </div>
             <p className="text-xs text-muted-foreground">

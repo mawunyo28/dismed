@@ -45,11 +45,7 @@ export default function LoginPage() {
             .limit(1)
             .maybeSingle()
 
-        if (!device) {
-          router.push('/setup')
-        } else {
-          router.push('/dashboard')
-        }
+        router.push(device ? '/dashboard' : '/devices')
         router.refresh()
       }
     })
