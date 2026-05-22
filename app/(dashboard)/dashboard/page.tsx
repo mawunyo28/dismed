@@ -1,327 +1,386 @@
 "use client"
 
-import { User, Clock, Scale, Droplet, Phone, AlertTriangle, Mic, Stethoscope, Pill, FileText, Wifi, Battery, CheckCircle, Activity, HardDrive } from "lucide-react"
+import { useEffect, useState, useCallback } from "react"
+import { User, Clock, Pill, CheckCircle, AlertTriangle, Play, HardDrive, Wifi, Battery } from "lucide-react"
 import Link from "next/link"
 
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
-import { currentPatient, todaySchedule, type DoseStatus } from "@/lib/mock-data"
+import { createClient } from "@/lib/supabase/client"
+import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 
-function getStatusColor(status: DoseStatus) {
-  switch (status) {
-    case "Taken":
-      return "bg-green-100 text-green-700 border-green-200"
-    case "Missed":
-      return "bg-red-100 text-red-700 border-red-200"
-    case "Due":
-      return "bg-amber-100 text-amber-700 border-amber-200"
-    case "Upcoming":
-      return "bg-muted text-muted-foreground"
-    default:
-      return "bg-muted text-muted-foreground"
-  }
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface Profile {
+  full_name: string | null
 }
 
-function getStatusBadgeVariant(status: DoseStatus): "default" | "secondary" | "destructive" | "outline" {
-  switch (status) {
-    case "Taken":
-      return "secondary"
-    case "Missed":
-      return "destructive"
-    case "Due":
-      return "default"
-    case "Upcoming":
-      return "outline"
-    default:
-      return "outline"
-  }
+interface Device {
+  id: string
+  label: string | null
+  is_online: boolean
+  last_seen_at: string | null
 }
+
+interface Compartment {
+  id: string
+  slot: number
+  medication_name: string | null
+  dosage_mg: number | null
+  pill_count: number
+  capacity: number
+}
+
+interface Schedule {
+  id: string
+  dispense_time: string     // "HH:MM:SS"
+  days_of_week: number[]
+  pills_per_dose: number
+  active: boolean
+  compartment_id: string
+  compartments: { slot: number; medication_name: string | null; dosage_mg: number | null }
+}
+
+interface DispenseEvent {
+  id: string
+  slot: number | null
+  status: string
+  dispensed_at: string
+  compartments: { medication_name: string | null } | null
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmt12(time: string) {
+  const [h, m] = time.split(":").map(Number)
+  const suffix = h >= 12 ? "PM" : "AM"
+  const h12 = ((h % 12) || 12).toString().padStart(2, "0")
+  return `${h12}:${m.toString().padStart(2, "0")} ${suffix}`
+}
+
+function relativeTime(iso: string | null) {
+  if (!iso) return "Never"
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return "Just now"
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  return `${Math.floor(hrs / 24)}d ago`
+}
+
+const SLOT_COLORS: Record<number, string> = {
+  1: "border-blue-300 bg-blue-50 text-blue-800",
+  2: "border-violet-300 bg-violet-50 text-violet-800",
+  3: "border-emerald-300 bg-emerald-50 text-emerald-800",
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const missedDose = todaySchedule.find((item) => item.status === "Missed")
-  const remainingDoses = todaySchedule.filter((item) => item.status === "Due" || item.status === "Upcoming").length
+  const supabase = createClient()
+
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [device, setDevice] = useState<Device | null>(null)
+  const [compartments, setCompartments] = useState<Compartment[]>([])
+  const [schedules, setSchedules] = useState<Schedule[]>([])
+  const [recentEvents, setRecentEvents] = useState<DispenseEvent[]>([])
+  const [loading, setLoading] = useState(true)
+  const [dispensing, setDispensing] = useState<string | null>(null) // compartment id currently being triggered
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { setLoading(false); return }
+
+    const [
+      { data: profileData },
+      { data: deviceData },
+    ] = await Promise.all([
+      supabase.from("profiles").select("full_name").eq("id", user.id).single(),
+      supabase.from("devices").select("id, label, is_online, last_seen_at").eq("owner_id", user.id).limit(1).single(),
+    ])
+
+    setProfile(profileData)
+
+    if (!deviceData) { setLoading(false); return }
+    setDevice(deviceData)
+
+    const [
+      { data: comps },
+      { data: scheds },
+      { data: events },
+    ] = await Promise.all([
+      supabase.from("compartments").select("*").eq("device_id", deviceData.id).order("slot"),
+      supabase.from("schedules")
+          .select("*, compartments(slot, medication_name, dosage_mg)")
+          .eq("device_id", deviceData.id)
+          .eq("active", true)
+          .order("dispense_time"),
+      supabase.from("dispense_events")
+          .select("id, slot, status, dispensed_at, compartments(medication_name)")
+          .eq("device_id", deviceData.id)
+          .order("dispensed_at", { ascending: false })
+          .limit(8),
+    ])
+
+    setCompartments(comps ?? [])
+    setSchedules((scheds as unknown as Schedule[]) ?? [])
+    setRecentEvents((events as unknown as DispenseEvent[]) ?? [])
+    setLoading(false)
+  }, [supabase])
+
+  useEffect(() => { load() }, [load])
+
+  // ── Manual dispense ────────────────────────────────────────────────────────
+  // Inserts a row into dispense_commands. The ESP32 polls this table.
+
+  const manualDispense = async (comp: Compartment) => {
+    if (!device) return
+    setDispensing(comp.id)
+    const { error } = await supabase.from("dispense_commands").insert({
+      device_id: device.id,
+      slot: comp.slot,
+      status: "pending",
+    })
+    if (error) {
+      toast.error("Failed to send command: " + error.message)
+    } else {
+      toast.success(`Dispense command sent for slot ${comp.slot} (${comp.medication_name})`)
+    }
+    setDispensing(null)
+  }
+
+  // ── Derived ────────────────────────────────────────────────────────────────
+
+  const today = new Date()
+  const todayDow = today.getDay() // 0=Sun
+  const todaySchedules = schedules.filter(s => s.days_of_week.includes(todayDow))
+
+  const missedCount = recentEvents.filter(e => e.status === "missed").length
+  const filledComps = compartments.filter(c => c.medication_name)
+
+  const firstName = profile?.full_name?.split(" ")[0] ?? "there"
+
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      {/* Page header */}
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Patient Dashboard</h1>
-        <p className="text-muted-foreground">
-          Welcome back, {currentPatient.name.split(" ")[0]}. You have {remainingDoses} dose{remainingDoses !== 1 ? "s" : ""} remaining for today.
-        </p>
-      </div>
+      <div className="flex flex-col gap-6 p-6">
+        {/* Header */}
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+          <p className="text-muted-foreground">
+            Welcome back, {firstName}. {todaySchedules.length > 0
+              ? `${todaySchedules.length} dose${todaySchedules.length !== 1 ? "s" : ""} scheduled today.`
+              : "No doses scheduled today."}
+          </p>
+        </div>
 
-      {/* Patient info & Emergency contact */}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <Card className="flex-1">
-          <CardContent className="flex flex-wrap items-center gap-6 py-4">
-            <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-full bg-muted">
-                <User className="size-5 text-muted-foreground" />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">Patient</p>
-                <p className="font-medium">{currentPatient.name}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-full bg-muted">
-                <Clock className="size-5 text-muted-foreground" />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">Age</p>
-                <p className="font-medium">{currentPatient.age} Years</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-full bg-muted">
-                <Scale className="size-5 text-muted-foreground" />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">Weight</p>
-                <p className="font-medium">{currentPatient.weight} kg</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-full bg-muted">
-                <Droplet className="size-5 text-muted-foreground" />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">Blood Type</p>
-                <p className="font-medium">{currentPatient.bloodType}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-red-200 bg-red-50">
-          <CardContent className="flex items-center gap-3 py-4">
-            <div>
-              <p className="text-xs text-red-600 uppercase tracking-wide">Emergency Contact</p>
-              <p className="font-medium text-red-900">{currentPatient.emergencyContact.name} ({currentPatient.emergencyContact.relationship})</p>
-            </div>
-            <Button size="icon" variant="destructive" className="ml-auto rounded-full">
-              <Phone className="size-4" />
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-3">
-        {/* Main content area */}
-        <div className="flex flex-col gap-6 lg:col-span-2">
-          {/* Missed dose alert */}
-          {missedDose && (
-            <Card className="border-red-200 bg-red-50">
-              <CardContent className="flex items-start gap-4 py-4">
-                <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-red-100">
-                  <AlertTriangle className="size-5 text-red-600" />
-                </div>
-                <div className="flex-1">
-                  <h3 className="font-semibold text-red-900">Missed Dose: {missedDose.medication} {missedDose.dosage}</h3>
-                  <p className="text-sm text-red-700">
-                    A dose scheduled for {missedDose.time} was missed. Please consult the Painkiller Flow or contact your clinician if needed.
+        {loading ? (
+            <p className="text-muted-foreground">Loading…</p>
+        ) : !device ? (
+            <Card className="border-dashed">
+              <CardContent className="flex flex-col items-center gap-4 py-12 text-center">
+                <HardDrive className="size-12 text-muted-foreground" />
+                <div>
+                  <p className="font-semibold">No dispenser linked yet</p>
+                  <p className="text-sm text-muted-foreground">
+                    Register your ESP32 device from the <Link href="/devices" className="underline">Devices page</Link>.
                   </p>
-                  <div className="mt-3 flex gap-2">
-                    <Button size="sm" variant="destructive">Acknowledge</Button>
-                    <Button size="sm" variant="ghost" className="text-red-700 hover:bg-red-100">View Alert Details</Button>
-                  </div>
                 </div>
               </CardContent>
             </Card>
-          )}
-
-          {/* Today's medication schedule */}
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <div>
-                <CardTitle className="flex items-center gap-2">
-                  <Clock className="size-5" />
-                  Today&apos;s Medication Schedule
-                </CardTitle>
-                <CardDescription>Chronological overview of your prescribed plan.</CardDescription>
-              </div>
-              <Button variant="outline" asChild>
-                <Link href="/schedules">View Calendar</Link>
-              </Button>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              {todaySchedule.map((item) => (
-                <div
-                  key={item.id}
-                  className={cn(
-                    "flex items-center gap-4 rounded-lg border p-4",
-                    item.status === "Due" && "border-amber-300 bg-amber-50"
-                  )}
-                >
-                  <div className="text-center">
-                    <p className="font-semibold">{item.time}</p>
-                    <p className="text-xs text-muted-foreground uppercase">Today</p>
-                  </div>
+        ) : (
+            <>
+              {/* Device status bar */}
+              <Card className={cn("border", device.is_online ? "border-green-200 bg-green-50" : "border-red-200 bg-red-50")}>
+                <CardContent className="flex items-center gap-4 py-3">
+                  <div className={cn("size-2.5 rounded-full", device.is_online ? "bg-green-500" : "bg-red-500")} />
                   <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium">{item.medication}</p>
-                      {item.status === "Due" && (
-                        <Badge variant="secondary" className="bg-amber-500 text-white">NOW</Badge>
-                      )}
-                    </div>
-                    <p className="text-sm text-muted-foreground">{item.dosage} &bull; {item.category}</p>
+                    <span className="font-medium">{device.label ?? device.id}</span>
+                    <span className="ml-2 text-sm text-muted-foreground">
+                  · Last seen {relativeTime(device.last_seen_at)}
+                </span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {item.status === "Due" ? (
-                      <>
-                        <Badge variant="outline" className="gap-1">
-                          <Clock className="size-3" />
-                          Due
-                        </Badge>
-                        <Button size="sm">Dispense</Button>
-                      </>
-                    ) : (
-                      <Badge 
-                        variant={getStatusBadgeVariant(item.status)}
-                        className={cn("gap-1", item.status === "Taken" && "bg-green-100 text-green-700 border-green-200")}
-                      >
-                        {item.status === "Taken" && <CheckCircle className="size-3" />}
-                        {item.status === "Missed" && <Clock className="size-3" />}
-                        {item.status === "Upcoming" && <Clock className="size-3" />}
-                        {item.status}
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          {/* Refill notification */}
-          <div className="rounded-lg bg-muted py-3 text-center text-sm text-muted-foreground">
-            Next refill expected in <strong className="text-foreground">5 days</strong> for Ibuprofen.
-          </div>
-
-          {/* Quick action cards */}
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-            {[
-              { icon: Mic, label: "Record Voice", href: "/voice-health" },
-              { icon: Stethoscope, label: "Symptom Checker", href: "/symptom-checker" },
-              { icon: Pill, label: "Pain Relief", href: "/painkiller" },
-              { icon: FileText, label: "Refill Logs", href: "/medications" },
-            ].map((action) => (
-              <Card key={action.label} className="transition-colors hover:bg-muted/50">
-                <Link href={action.href}>
-                  <CardContent className="flex flex-col items-center justify-center gap-2 py-6">
-                    <action.icon className="size-6 text-muted-foreground" />
-                    <span className="text-sm font-medium uppercase tracking-wide">{action.label}</span>
-                  </CardContent>
-                </Link>
+                  <Link href="/dispenser">
+                    <Button variant="outline" size="sm">Device Details →</Button>
+                  </Link>
+                </CardContent>
               </Card>
-            ))}
-          </div>
-        </div>
 
-        {/* Right sidebar */}
-        <div className="flex flex-col gap-6">
-          {/* Dispenser status */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <HardDrive className="size-5" />
-                Dispenser Status
-              </CardTitle>
-              <CardDescription>Real-time telemetry from your smart unit.</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="rounded-lg border p-3">
-                  <div className="flex items-center justify-between">
-                    <Battery className="size-4 text-muted-foreground" />
-                    <Badge variant="secondary" className="text-xs">Excellent</Badge>
-                  </div>
-                  <p className="mt-2 text-2xl font-bold">84%</p>
-                  <p className="text-xs text-muted-foreground">Approx. 14h left</p>
+              <div className="grid gap-6 lg:grid-cols-3">
+                {/* Left/main column */}
+                <div className="flex flex-col gap-6 lg:col-span-2">
+                  {/* Compartments + manual dispense */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <Pill className="size-5" />
+                        Compartments
+                      </CardTitle>
+                      <CardDescription>
+                        3 physical slots in your dispenser. Click <strong>Dispense</strong> to trigger a slot manually.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="flex flex-col gap-3">
+                      {[1, 2, 3].map(slot => {
+                        const c = compartments.find(x => x.slot === slot)
+                        const pct = c ? (c.pill_count / c.capacity) * 100 : 0
+                        const low = c && c.pill_count / c.capacity < 0.2
+                        return (
+                            <div
+                                key={slot}
+                                className={cn(
+                                    "flex items-center gap-4 rounded-lg border p-4",
+                                    c?.medication_name ? SLOT_COLORS[slot] : "border-dashed bg-muted/30"
+                                )}
+                            >
+                              <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-white/70 font-bold text-sm shadow-sm">
+                                {slot}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                {c?.medication_name ? (
+                                    <>
+                                      <p className="font-semibold truncate">{c.medication_name}</p>
+                                      <p className="text-sm text-muted-foreground">{c.dosage_mg} mg</p>
+                                      <div className="mt-1 flex items-center gap-2">
+                                        <Progress value={pct} className={cn("h-1.5 w-24", low && "[&>div]:bg-amber-500")} />
+                                        <span className="text-xs text-muted-foreground">{c.pill_count} pills left</span>
+                                        {low && <Badge className="bg-amber-100 text-amber-700 text-xs">Low</Badge>}
+                                      </div>
+                                    </>
+                                ) : (
+                                    <p className="italic text-muted-foreground text-sm">
+                                      Empty — <Link href="/medications" className="underline">Set up medication</Link>
+                                    </p>
+                                )}
+                              </div>
+                              {c?.medication_name && (
+                                  <Button
+                                      size="sm"
+                                      disabled={dispensing === c.id || !device.is_online}
+                                      onClick={() => manualDispense(c)}
+                                  >
+                                    <Play className="mr-1.5 size-3.5" />
+                                    {dispensing === c.id ? "Sending…" : "Dispense"}
+                                  </Button>
+                              )}
+                            </div>
+                        )
+                      })}
+                      {!filledComps.length && (
+                          <p className="py-4 text-center text-sm text-muted-foreground">
+                            No medications configured. <Link href="/medications" className="underline">Add them now →</Link>
+                          </p>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Today's schedule */}
+                  <Card>
+                    <CardHeader>
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="flex items-center gap-2">
+                          <Clock className="size-5" />
+                          Today's Schedule
+                        </CardTitle>
+                        <Link href="/schedules">
+                          <Button variant="outline" size="sm">Manage Schedules</Button>
+                        </Link>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="flex flex-col gap-2">
+                      {todaySchedules.length === 0 ? (
+                          <p className="py-6 text-center text-sm text-muted-foreground">
+                            No schedules for today. <Link href="/schedules" className="underline">Create one →</Link>
+                          </p>
+                      ) : todaySchedules.map(s => (
+                          <div key={s.id} className="flex items-center gap-4 rounded-lg border p-3">
+                            <p className="w-20 shrink-0 font-semibold tabular-nums">{fmt12(s.dispense_time)}</p>
+                            <div className="flex-1">
+                              <p className="font-medium">{s.compartments?.medication_name ?? `Slot ${s.compartments?.slot}`}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {s.compartments?.dosage_mg} mg · {s.pills_per_dose} pill{s.pills_per_dose !== 1 ? "s" : ""}
+                              </p>
+                            </div>
+                            <Badge variant="outline" className="text-xs">Slot {s.compartments?.slot}</Badge>
+                          </div>
+                      ))}
+                    </CardContent>
+                  </Card>
                 </div>
-                <div className="rounded-lg border p-3">
-                  <div className="flex items-center justify-between">
-                    <Wifi className="size-4 text-muted-foreground" />
-                    <Badge variant="secondary" className="text-xs">Stable</Badge>
-                  </div>
-                  <p className="mt-2 text-2xl font-bold">42ms</p>
-                  <p className="text-xs text-muted-foreground">Connected: Home_5G</p>
+
+                {/* Right sidebar */}
+                <div className="flex flex-col gap-6">
+                  {/* Recent dispense events */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <Clock className="size-5" />
+                        Recent Activity
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex flex-col gap-2">
+                      {recentEvents.length === 0 ? (
+                          <p className="py-4 text-center text-sm text-muted-foreground">No dispense events yet.</p>
+                      ) : recentEvents.map(e => (
+                          <div key={e.id} className="flex items-start gap-3">
+                            {e.status === "success" && <CheckCircle className="mt-0.5 size-4 shrink-0 text-green-600" />}
+                            {e.status === "missed"  && <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />}
+                            {e.status === "jammed"  && <AlertTriangle className="mt-0.5 size-4 shrink-0 text-red-600" />}
+                            {e.status === "manual"  && <Play className="mt-0.5 size-4 shrink-0 text-blue-600" />}
+                            <div>
+                              <p className="text-sm font-medium">
+                                {e.compartments?.medication_name ?? `Slot ${e.slot}`}
+                                {" "}<span className="capitalize text-muted-foreground font-normal">({e.status})</span>
+                              </p>
+                              <p className="text-xs text-muted-foreground">{relativeTime(e.dispensed_at)}</p>
+                            </div>
+                          </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+
+                  {/* Low stock alerts */}
+                  {compartments.some(c => c.pill_count / c.capacity < 0.2 && c.medication_name) && (
+                      <Card className="border-amber-200 bg-amber-50">
+                        <CardContent className="flex flex-col gap-2 py-4">
+                          <p className="font-semibold text-amber-900 flex items-center gap-2">
+                            <AlertTriangle className="size-4" /> Low Stock
+                          </p>
+                          {compartments
+                              .filter(c => c.pill_count / c.capacity < 0.2 && c.medication_name)
+                              .map(c => (
+                                  <p key={c.id} className="text-sm text-amber-800">
+                                    Slot {c.slot} · {c.medication_name}: {c.pill_count} pills remaining
+                                  </p>
+                              ))}
+                        </CardContent>
+                      </Card>
+                  )}
+
+                  {/* Quick links */}
+                  <Card>
+                    <CardContent className="flex flex-col gap-2 py-4">
+                      {[
+                        { label: "Manage Medications", href: "/medications" },
+                        { label: "Edit Schedules", href: "/schedules" },
+                        { label: "Device Details", href: "/dispenser" },
+                        { label: "Symptom Checker", href: "/symptom-checker" },
+                      ].map(a => (
+                          <Link key={a.label} href={a.href}>
+                            <Button variant="ghost" className="w-full justify-start">{a.label}</Button>
+                          </Link>
+                      ))}
+                    </CardContent>
+                  </Card>
                 </div>
               </div>
-
-              <div className="rounded-lg border p-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">System Status: Active</span>
-                  <span className="text-xs text-muted-foreground">ID: SPD-4921-X</span>
-                </div>
-                <Progress value={100} className="mt-2 h-1" />
-                <div className="mt-3 flex gap-2">
-                  <Button variant="outline" size="sm" className="flex-1">Run Diagnostics</Button>
-                  <Button variant="outline" size="sm" className="flex-1">Firmware V1.4</Button>
-                </div>
-              </div>
-
-              <Button variant="ghost" className="w-full justify-between" asChild>
-                <Link href="/dispenser">
-                  Detailed Device Dashboard
-                  <span>&rarr;</span>
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Health snapshot */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Activity className="size-5" />
-                Health Snapshot
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-4">
-              <div className="flex items-center justify-between rounded-lg border p-3">
-                <div className="flex items-center gap-3">
-                  <Mic className="size-5 text-muted-foreground" />
-                  <div>
-                    <p className="text-xs text-muted-foreground uppercase">Voice Health Score</p>
-                    <p className="text-xl font-bold">82 <span className="text-sm font-normal text-muted-foreground">/100</span></p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <span className="text-xs text-green-600">+8%</span>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between rounded-lg border p-3">
-                <div className="flex items-center gap-3">
-                  <Stethoscope className="size-5 text-muted-foreground" />
-                  <div>
-                    <p className="text-xs text-muted-foreground uppercase">Symptom Trend</p>
-                    <p className="text-xl font-bold">Moderate <span className="text-sm font-normal text-muted-foreground">Risk</span></p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <span className="text-xs text-red-600">+8%</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Reorder banner */}
-          <Card className="bg-foreground text-background">
-            <CardContent className="py-6 text-center">
-              <p className="mb-4 text-sm">Your Ibuprofen and Metformin are below the refill threshold.</p>
-              <Button variant="secondary" asChild>
-                <Link href="/medications">Reorder Now</Link>
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
+            </>
+        )}
       </div>
-    </div>
   )
 }
