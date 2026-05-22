@@ -20,10 +20,16 @@ export async function POST(req: NextRequest) {
 
     if (!slot || !status) return NextResponse.json({ error: "slot and status required" }, { status: 400 })
 
+    const { data: device_row } = await supabase
+        .from("devices")
+        .select("owner_id")
+        .eq("id", device.id)
+        .single()
+
     // Find compartment for this slot
     const { data: comp } = await supabase
         .from("compartments")
-        .select("id, pill_count")
+        .select("id, pill_count, medication_name")
         .eq("device_id", device.id)
         .eq("slot", slot)
         .single()
@@ -37,6 +43,20 @@ export async function POST(req: NextRequest) {
         triggered_by: status === "manual" ? "manual" : "schedule",
     })
 
+    if (device_row && ["missed", "jammed"].includes(status)) {
+        const medication = comp?.medication_name ? ` for ${comp.medication_name}` : ""
+        const isJammed = status === "jammed"
+
+        await supabase.from("notifications").insert({
+            owner_id: device_row.owner_id,
+            title: isJammed ? `Dispenser Jammed: Slot ${slot}` : `Missed Dose: Slot ${slot}`,
+            body: isJammed
+                ? `The dispenser reported a jam in slot ${slot}${medication}. Check the device before the next dose.`
+                : `The scheduled dose in slot ${slot}${medication} was not dispensed successfully.`,
+            category: isJammed ? "jammed" : "missed_dose",
+        })
+    }
+
     // Decrement pill count on success
     if (status === "success" && comp && comp.pill_count > 0) {
         await supabase
@@ -46,8 +66,6 @@ export async function POST(req: NextRequest) {
 
         // Alert if low stock (< 5 pills)
         if (comp.pill_count - 1 < 5) {
-            const { data: device_row } = await supabase
-                .from("devices").select("owner_id").eq("id", device.id).single()
             if (device_row) {
                 await supabase.from("notifications").insert({
                     owner_id: device_row.owner_id,
