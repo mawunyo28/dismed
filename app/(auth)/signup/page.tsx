@@ -23,6 +23,9 @@ export default function SignupPage() {
     supabase.auth.signUp({
       email: email,
       password: password,
+      options: {
+        emailRedirectTo: "localhost:3000/dashboard"
+      }
     })
   }
 
