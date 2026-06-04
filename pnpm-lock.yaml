@@ -8,12 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@capacitor/android':
-        specifier: ^8.4.0
-        version: 8.4.0(@capacitor/core@8.4.0)
-      '@capacitor/core':
-        specifier: ^8.4.0
-        version: 8.4.0
       '@google/genai':
         specifier: ^2.6.0
         version: 2.6.0
@@ -171,7 +165,13 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
     devDependencies:
+      '@capacitor/android':
+        specifier: ^8.4.0
+        version: 8.4.0(@capacitor/core@8.4.0)
       '@capacitor/cli':
+        specifier: ^8.4.0
+        version: 8.4.0
+      '@capacitor/core':
         specifier: ^8.4.0
         version: 8.4.0
       '@tailwindcss/postcss':
