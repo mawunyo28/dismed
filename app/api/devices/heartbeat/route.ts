@@ -1,20 +1,41 @@
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+	process.env.NEXT_PUBLIC_SUPABASE_URL!,
+	process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
 export async function POST(req: NextRequest) {
-	const key = req.headers.get("x-device-key");
-	console.log("[heartbeat] key received:", key);
+	const headerKey = req.headers.get("x-device-key");
+	let device_key = headerKey;
 
-	if (!key)
-		return NextResponse.json({ error: "Missing device key" }, { status: 401 });
+	if (!device_key) {
+		const body = await req.json().catch(() => ({}));
+		device_key = body.device_key;
+	}
 
-	const { data: device, error } = await supabase
+	if (!device_key) {
+		return NextResponse.json({ error: "device_key required" }, { status: 401 });
+	}
+
+	const { data: device } = await supabase
 		.from("devices")
-		.update({ is_online: true, last_seen_at: new Date().toISOString() })
-		.eq("device_key", key)
 		.select("id")
+		.eq("device_key", device_key)
 		.single();
 
-	console.log("[heartbeat] device:", device, "error:", error);
-
-	if (error || !device)
+	if (!device) {
 		return NextResponse.json({ error: "Unknown device" }, { status: 403 });
-	return NextResponse.json({ ok: true, device_id: device.id });
+	}
+
+	await supabase
+		.from("devices")
+		.update({
+			last_seen_at: new Date().toISOString(),
+			is_online: true,
+		})
+		.eq("id", device.id);
+
+	return NextResponse.json({ ok: true });
 }
