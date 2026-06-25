@@ -7,8 +7,8 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
 );
 
-// GET — ESP32 polls for pending manual commands
-// Returns plain text "none" or "slot:N:command_id"
+// GET — ESP32 polls for pending manual dispense commands
+// Returns plain text "none" or "slot:N:command_uuid"
 export async function GET(req: NextRequest) {
     const device_key =
         req.headers.get("x-device-key") ?? req.nextUrl.searchParams.get("key");
@@ -48,24 +48,26 @@ export async function GET(req: NextRequest) {
     });
 }
 
-// POST — ESP32 marks a command as done or failed
+// POST — ESP32 explicitly marks a command as done
+// In most cases the /dispense route handles this automatically
+// This exists as a fallback if the ESP32 wants to mark it separately
 export async function POST(req: NextRequest) {
-    const headerKey = req.headers.get("x-device-key");
     const contentType = req.headers.get("content-type") ?? "";
 
-    let device_key = headerKey;
-    let command_id: string, result: string;
+    let device_key: string | null = null;
+    let command_id: string | null = null;
+    let result: string;
 
     if (contentType.includes("application/json")) {
         const body = await req.json();
-        device_key = device_key ?? body.key;
+        device_key = body.device_key ?? body.key;
         command_id = body.command_id;
-        result = body.result;
+        result = body.result ?? "done";
     } else {
         const text = await req.text();
         const params = new URLSearchParams(text);
-        device_key = device_key ?? params.get("key");
-        command_id = params.get("command_id") ?? "";
+        device_key = params.get("device_key") ?? params.get("key");
+        command_id = params.get("command_id");
         result = params.get("result") ?? "done";
     }
 
@@ -76,13 +78,24 @@ export async function POST(req: NextRequest) {
         );
     }
 
+    const { data: device } = await supabase
+        .from("devices")
+        .select("id")
+        .eq("device_key", device_key)
+        .single();
+
+    if (!device) {
+        return NextResponse.json({ error: "Unknown device" }, { status: 403 });
+    }
+
     await supabase
         .from("dispense_commands")
         .update({
             status: result,
             executed_at: new Date().toISOString(),
         })
-        .eq("id", command_id);
+        .eq("id", command_id)
+        .eq("device_id", device.id); // scoped to this device for safety
 
     return NextResponse.json({ ok: true });
 }

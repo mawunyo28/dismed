@@ -7,25 +7,30 @@ const supabase = createClient(
 );
 
 export async function POST(req: NextRequest) {
-	const headerKey = req.headers.get("x-device-key");
-	let device_key = headerKey;
+	const contentType = req.headers.get("content-type") ?? "";
 
-	if (!device_key) {
+	let device_key: string | null = null;
+
+	if (contentType.includes("application/json")) {
 		const body = await req.json().catch(() => ({}));
-		device_key = body.device_key;
+		device_key = body.device_key ?? body.key;
+	} else {
+		const text = await req.text();
+		const params = new URLSearchParams(text);
+		device_key = params.get("device_key") ?? params.get("key");
 	}
 
 	if (!device_key) {
 		return NextResponse.json({ error: "device_key required" }, { status: 401 });
 	}
 
-	const { data: device } = await supabase
+	const { data: device, error } = await supabase
 		.from("devices")
 		.select("id")
 		.eq("device_key", device_key)
 		.single();
 
-	if (!device) {
+	if (error || !device) {
 		return NextResponse.json({ error: "Unknown device" }, { status: 403 });
 	}
 
