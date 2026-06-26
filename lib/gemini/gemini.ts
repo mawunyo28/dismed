@@ -10,6 +10,7 @@ export async function check_symptoms(
   duration: number,
   severity: string,
   pain_scale: number,
+  weight: number,
 ) {
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash",
@@ -19,6 +20,7 @@ Analyze the following patient data:
 - Temperature: ${temperature_celsius}°C
 - Blood Pressure: ${bp} mmHg
 - Primary Symptom: ${primarySymptom}
+- Patient Weight: ${weight}
 - Duration: ${duration} days
 - Severity: ${severity} (Pain scale: ${pain_scale}/10)
 - Additional description: ${description}
