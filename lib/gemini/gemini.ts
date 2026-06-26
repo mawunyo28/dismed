@@ -1,19 +1,19 @@
-import { GoogleGenAI } from "@google/genai"
+import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY })
+const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
 
 export async function check_symptoms(
-    description: string,
-    temperature_celsius: number,
-    bp: string,
-    primarySymptom: string,
-    duration: number,
-    severity: string,
-    pain_scale: number,
+  description: string,
+  temperature_celsius: number,
+  bp: string,
+  primarySymptom: string,
+  duration: number,
+  severity: string,
+  pain_scale: number,
 ) {
-    const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: `You are an advanced clinical decision support AI designed to assist healthcare professionals by analyzing patient vitals and symptoms. Your task is to process the provided patient data and return a structured health analysis strictly in JSON format.
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: `You are an advanced clinical decision support AI designed to assist healthcare professionals by analyzing patient vitals and symptoms. Your task is to process the provided patient data and return a structured health analysis strictly in JSON format.
 
 Analyze the following patient data:
 - Temperature: ${temperature_celsius}°C
@@ -33,6 +33,7 @@ Constraints:
 - Do not include any conversational filler, markdown formatting (outside of the json code block), or introductory text.
 - Return ONLY the valid JSON object.
 - Include a standard medical disclaimer within the JSON.
+- Showed be understandable as being presented to the patient not the medical officer
 
 Expected JSON Structure:
 {
@@ -51,12 +52,15 @@ Expected JSON Structure:
   "certainty_score": "string",
   "disclaimer": "string"
 }`,
-    })
+  });
 
-    const raw = response.text ?? ""
+  const raw = response.text ?? "";
 
-    // Strip optional markdown code fences the model may include
-    const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim()
+  // Strip optional markdown code fences the model may include
+  const cleaned = raw
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "")
+    .trim();
 
-    return JSON.parse(cleaned)
+  return JSON.parse(cleaned);
 }
