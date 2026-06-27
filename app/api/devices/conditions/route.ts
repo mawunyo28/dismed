@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
-  process.env.SUPABASE_URL ?? "",
-  process.env.SUPABASE_SERVICE_ROLE_KEY ?? "", // Use service role to bypass RLS restrictions securely on write operations
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  // Use service role to bypass RLS restrictions securely on write operations
 );
 
 export default async function handler(req, res) {
